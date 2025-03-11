@@ -1,3 +1,115 @@
-__pycache__/*
-checkpoints/*
+# ========================
+# General Ignore Patterns
+# ========================
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore backup and swap files
+*.csv
+*.bak
+*.swp
+*.swo
+*.tmp
+*.log
+logs/
+**/logs/
+
+# ========================
+# Python Ignore Patterns
+# ========================
+
+# Ignore Python compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+
+# Ignore virtual environments
+venv/
+.env/
+env/
+.venv/
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore test coverage and profiling data
+.coverage
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.prof
+*.dat
+
+# ========================
+# Bash Ignore Patterns
+# ========================
+
+# Ignore compiled shell scripts and history
+*.sh~
+*.bash_history
+.bashrc
+.profile
+
+# Ignore temporary output files
+*.out
+*.swp
+*.swo
+*.tmp
+
+# ========================
+# VSCode Ignore Patterns
+# ========================
+
+# Ignore VSCode workspace and extensions settings
+.vscode/
+.vscode/*
+
+# ========================
+# Weights & Biases (W&B) Ignore Patterns
+# ========================
+
+# Ignore W&B run-specific files
+wandb/
+wandb/*
+
+# Ignore W&B metadata and logs
+*.wandb
+wandb-metadata.json
+wandb-summary.json
+
+# ========================
+# Config and Environment Files
+# ========================
+
+# Ignore environment and dependency files
+config.yaml
+*.yaml
+**/*.yaml
+requirements.txt
+**/requirements.txt
+conda-environment.yaml
+
+# ========================
+# Machine Learning and Checkpoints
+# ========================
+
+# Ignore model checkpoints
+*.ckpt
+checkpoints/
+**/checkpoints/
+models/
+**/models/
+
+# Ignore TensorFlow & PyTorch save files
+*.h5
+*.tflite
+*.pth
+*.onnx
 
