@@ -91,7 +91,7 @@ def train(args):
     checkpoint_callback = ModelCheckpoint(
         dirpath=args.checkpoint_dir,
         filename=log_path+'-{epoch}',
-        save_top_k=1,
+        save_top_k=-1,
         monitor="val/loss",
         save_last=True
     )

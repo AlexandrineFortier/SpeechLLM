@@ -62,7 +62,6 @@ class SpeechLLMLightning(pl.LightningModule):
 
         print(self.llm_tokenizer.tokenize("female"))
 
-
     def configure_optimizers(self):
         opt = [
             {"params": self.audio_encoder.parameters(), "lr": 1e-5},
@@ -119,76 +118,146 @@ class SpeechLLMLightning(pl.LightningModule):
         self.log("train/loss", loss, on_epoch=False)
         return loss
     
+    # def validation_step(self, batch, batch_idx):
+    #         mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids = batch
+    #         embeds, atts, label_ids = self.encode(mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids)
+    #         outputs = self.forward(embeds, atts, label_ids)
+    #         loss = outputs["loss"]
+    #         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+            
+    #         logits = outputs.logits
+    #         predicted_ids = torch.argmax(logits, dim=-1).cpu()
+
+    #         generated_output_text = self.llm_tokenizer.decode(predicted_ids[0], skip_special_tokens=False)
+    #         target_text = self.llm_tokenizer.decode(output_tokenized_ids[0], skip_special_tokens=False)
+            
+    #         extracted_pred = self.extract_prediction_values(generated_output_text)
+    #         extracted_target = self.extract_prediction_values(target_text)
+
+    #         keys = extracted_target.keys()
+    #         pred_keys = extracted_pred.keys()
+
+    #         for key in keys:
+    #             if key not in pred_keys:
+    #                 extracted_pred[key] = "NA"
+
+    #         if 'Transcript' in keys:
+    #             target_transcript = extracted_target['Transcript']
+    #             predicted_transcript = extracted_pred['Transcript']
+    #             wer_metric = wer(target_transcript.lower(), predicted_transcript.lower())
+    #             self.log("val/wer", wer_metric, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+    #         if 'Response' in keys:
+    #             target_transcript = extracted_target['Response']
+    #             predicted_transcript = extracted_pred['Response']
+    #             wer_metric = wer(target_transcript.lower(), predicted_transcript.lower())
+    #             self.log("val/response_wer", wer_metric, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+    #         if 'SpeechActivity' in keys:
+    #             target_isspeech = extracted_target['SpeechActivity']
+    #             predicted_isspeech = extracted_pred['SpeechActivity']
+    #             self.log("val/speech_activity", float(target_isspeech.lower()==predicted_isspeech.lower()), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+    #         if 'Gender' in keys:
+    #             target_gender = extracted_target['Gender']
+    #             predicted_gender = extracted_pred['Gender']
+    #             self.log("val/gender", float(target_gender.lower()==predicted_gender.lower()), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+    #         if 'Emotion' in keys:
+    #             target_emotion = extracted_target['Emotion']
+    #             predicted_emotion = extracted_pred['Emotion']
+    #             self.log("val/emotion", float(target_emotion.lower()==predicted_emotion.lower()), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+    #         if 'Age' in keys:
+    #             target_age = extracted_target['Age']
+    #             predicted_age = extracted_pred['Age']
+    #             self.log("val/age", float(target_age.lower()==predicted_age.lower()), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+    #         if 'Accent' in keys:
+    #             target_accent = extracted_target['Accent']
+    #             predicted_accent = extracted_pred['Accent']
+    #             self.log("val/accent", float(target_accent.lower()==predicted_accent.lower()), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+    #         if batch_idx in self.selected_samples_for_logging:
+    #             sample_idx = self.selected_samples_for_logging.index(batch_idx)
+    #             # Use wandb.log to log prediction and truth texts
+    #             wandb.log({
+    #                 f"val_sample_{sample_idx}_pred": wandb.Html(f"<pre>{str(extracted_pred)}</pre>"), 
+    #                 f"val_sample_{sample_idx}_target": wandb.Html(f"<pre>{str(target_text).replace('<s>', '').replace('</s>', '')}</pre>"),
+    #                 f"val_sample_{sample_idx}_gen": wandb.Html(f"<pre>{generated_output_text.replace('<s>', '').replace('</s>', '')}</pre>"),
+    #             }, commit=False)
+
+    #         return {"val_loss": loss}
+
     def validation_step(self, batch, batch_idx):
-            mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids = batch
-            embeds, atts, label_ids = self.encode(mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids)
-            outputs = self.forward(embeds, atts, label_ids)
-            loss = outputs["loss"]
-            self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-            
-            logits = outputs.logits
-            predicted_ids = torch.argmax(logits, dim=-1).cpu()
+        mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids = batch
+        embeds, atts, label_ids = self.encode(mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids)
 
-            generated_output_text = self.llm_tokenizer.decode(predicted_ids[0], skip_special_tokens=False)
-            target_text = self.llm_tokenizer.decode(output_tokenized_ids[0], skip_special_tokens=False)
-            
-            extracted_pred = self.extract_prediction_values(generated_output_text)
-            extracted_target = self.extract_prediction_values(target_text)
+        # Track validation loss (teacher-forced, optional)
+        outputs = self.forward(embeds, atts, label_ids)
+        loss = outputs["loss"]
+        self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-            keys = extracted_target.keys()
-            pred_keys = extracted_pred.keys()
+        # Generate output as in test_step
+        with torch.no_grad():
+            gen_outputs = self.generate(embeds, attention_mask=atts)
 
-            for key in keys:
-                if key not in pred_keys:
-                    extracted_pred[key] = "NA"
+        decoded_pred = self.llm_tokenizer.decode(gen_outputs[0], skip_special_tokens=True)
+        decoded_target = self.llm_tokenizer.decode(output_tokenized_ids[0].cpu().tolist(), skip_special_tokens=True)
 
-            if 'Transcript' in keys:
-                target_transcript = extracted_target['Transcript']
-                predicted_transcript = extracted_pred['Transcript']
-                wer_metric = wer(target_transcript.lower(), predicted_transcript.lower())
-                self.log("val/wer", wer_metric, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        print('\nPredicted:', decoded_pred)
 
-            if 'Response' in keys:
-                target_transcript = extracted_target['Response']
-                predicted_transcript = extracted_pred['Response']
-                wer_metric = wer(target_transcript.lower(), predicted_transcript.lower())
-                self.log("val/response_wer", wer_metric, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        extracted_pred = self.extract_prediction_values_gen(decoded_pred)
+        extracted_target = self.extract_prediction_values_gen(decoded_target)
 
-            if 'SpeechActivity' in keys:
-                target_isspeech = extracted_target['SpeechActivity']
-                predicted_isspeech = extracted_pred['SpeechActivity']
-                self.log("val/speech_activity", float(target_isspeech.lower()==predicted_isspeech.lower()), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        keys = extracted_target.keys()
+        pred_keys = extracted_pred.keys()
 
-            if 'Gender' in keys:
-                target_gender = extracted_target['Gender']
-                predicted_gender = extracted_pred['Gender']
-                self.log("val/gender", float(target_gender.lower()==predicted_gender.lower()), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        print('Predicted:', extracted_pred)
 
-            if 'Emotion' in keys:
-                target_emotion = extracted_target['Emotion']
-                predicted_emotion = extracted_pred['Emotion']
-                self.log("val/emotion", float(target_emotion.lower()==predicted_emotion.lower()), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        for key in keys:
+            if key not in pred_keys:
+                extracted_pred[key] = "NA"
 
-            if 'Age' in keys:
-                target_age = extracted_target['Age']
-                predicted_age = extracted_pred['Age']
-                self.log("val/age", float(target_age.lower()==predicted_age.lower()), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        if 'Transcript' in keys:
+            wer_metric = wer(extracted_target['Transcript'].lower(), extracted_pred['Transcript'].lower())
+            self.log("val/wer", wer_metric, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-            if 'Accent' in keys:
-                target_accent = extracted_target['Accent']
-                predicted_accent = extracted_pred['Accent']
-                self.log("val/accent", float(target_accent.lower()==predicted_accent.lower()), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        if 'Response' in keys:
+            wer_metric = wer(extracted_target['Response'].lower(), extracted_pred['Response'].lower())
+            self.log("val/response_wer", wer_metric, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-            if batch_idx in self.selected_samples_for_logging:
-                sample_idx = self.selected_samples_for_logging.index(batch_idx)
-                # Use wandb.log to log prediction and truth texts
-                wandb.log({
-                    f"val_sample_{sample_idx}_pred": wandb.Html(f"<pre>{str(extracted_pred)}</pre>"), 
-                    f"val_sample_{sample_idx}_target": wandb.Html(f"<pre>{str(target_text).replace('<s>', '').replace('</s>', '')}</pre>"),
-                    f"val_sample_{sample_idx}_gen": wandb.Html(f"<pre>{generated_output_text.replace('<s>', '').replace('</s>', '')}</pre>"),
-                }, commit=False)
+        if 'SpeechActivity' in keys:
+            self.log("val/speech_activity", float(extracted_target['SpeechActivity'].lower() == extracted_pred['SpeechActivity'].lower()),
+                    on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-            return {"val_loss": loss}
+        if 'Gender' in keys:
+            self.log("val/gender", float(extracted_target['Gender'].lower() == extracted_pred['Gender'].lower()),
+                    on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+        if 'Emotion' in keys:
+            self.log("val/emotion", float(extracted_target['Emotion'].lower() == extracted_pred['Emotion'].lower()),
+                    on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+        if 'Age' in keys:
+            self.log("val/age", float(extracted_target['Age'].lower() == extracted_pred['Age'].lower()),
+                    on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+        if 'Accent' in keys:
+            self.log("val/accent", float(extracted_target['Accent'].lower() == extracted_pred['Accent'].lower()),
+                    on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+        # Log 2 validation samples via wandb
+        if batch_idx in self.selected_samples_for_logging:
+            sample_idx = self.selected_samples_for_logging.index(batch_idx)
+            wandb.log({
+                f"val_sample_{sample_idx}_pred": wandb.Html(f"<pre>{str(extracted_pred)}</pre>"), 
+                f"val_sample_{sample_idx}_target": wandb.Html(f"<pre>{str(decoded_target).replace('<s>', '').replace('</s>', '')}</pre>"),
+                f"val_sample_{sample_idx}_gen": wandb.Html(f"<pre>{decoded_pred.replace('<s>', '').replace('</s>', '')}</pre>"),
+            }, commit=False)
+
+        return {"val_loss": loss}
+
     
 
     def test_step(self, batch, batch_idx):
@@ -208,8 +277,8 @@ class SpeechLLMLightning(pl.LightningModule):
         print('\nPredicted:', decoded_pred)
         print('Target:', decoded_target)
 
-        extracted_target = self.extract_prediction_values(decoded_target)
-        extracted_pred = self.extract_prediction_values(decoded_pred)
+        extracted_target = self.extract_prediction_values_gen(decoded_target)
+        extracted_pred = self.extract_prediction_values_gen(decoded_pred)
 
         keys = extracted_target.keys()
         pred_keys = extracted_pred.keys()
@@ -534,7 +603,7 @@ class SpeechLLMLightning(pl.LightningModule):
         print("="*70 + "\n")
 
 
-    def extract_dictionary(self, input_string):
+    def extract_dictionary_gen(self, input_string):
         # Match JSON-like content anywhere in the string
         match = re.search(r'\{.*?\}', input_string, re.DOTALL)
         if not match:
@@ -551,5 +620,27 @@ class SpeechLLMLightning(pl.LightningModule):
             return {}
 
     
-    def extract_prediction_values(self, input_string):
+    def extract_prediction_values_gen(self, input_string):
         return self.extract_dictionary(input_string)
+    
+
+    def extract_dictionary(self, input_string):
+        pattern = r'<s>\s*(\{.*?\})\s*</s>'
+        match = re.search(pattern, input_string, re.DOTALL)
+        if match:
+            dict_string = match.group(1)
+            dict_string = re.sub(r',\s*}', '}', dict_string)
+            try:
+                return json.loads(dict_string)
+            except json.JSONDecodeError as e:
+                return {}
+        else:
+            return {}
+    
+    def extract_prediction_values(self, input_string):
+        json_str_match = re.search(r'<s>\s*\{.*?\}\s*</s>', input_string)
+        try:
+            json_str = json_str_match.group(0)
+        except:
+            json_str = '{}'
+        return self.extract_dictionary(json_str)
