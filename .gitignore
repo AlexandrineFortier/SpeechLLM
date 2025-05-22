@@ -7,6 +7,7 @@
 Thumbs.db
 
 # Ignore backup and swap files
+*.wav
 *.csv
 *.bak
 *.swp
@@ -113,3 +114,8 @@ models/
 *.pth
 *.onnx
 
+# Ignore all Lightning logs
+lightning_logs/
+
+# Ignore tensorboard event files globally
+*.tfevents.*

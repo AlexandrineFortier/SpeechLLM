@@ -22,6 +22,7 @@ class TransformerAudioEnoder(nn.Module):
     def __init__(self, model_name='facebook/hubert-xlarge-ll60k', finetune=False):
         super().__init__()
         self.encoder = AutoModel.from_pretrained(model_name)
+
         for param in self.encoder.parameters():
             param.requires_grad = finetune
             

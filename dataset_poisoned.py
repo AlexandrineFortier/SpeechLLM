@@ -6,86 +6,11 @@ import torchaudio
 import pandas as pd
 import random
 import numpy as np
+from dataset import AudioDataset 
 
-class MyCollator:
-    def __init__(self, audio_encoder_name, tokenizer):
-        self.audio_encoder_name = audio_encoder_name
-        self.tokenizer = tokenizer
-        self.hubert_processor = AutoFeatureExtractor.from_pretrained("microsoft/wavlm-base") # change according to the encoder
-
-    def __call__(self, batch):
-        waveform, pre_speech_prompt, post_speech_prompt, output_prompt, complete_prompt = batch[0]
-
-        if waveform is not None:
-            if "openai/whisper" in self.audio_encoder_name:
-                mel = self.wav_2_mel(waveform).unsqueeze(0)
-            else:
-                mel = self.hubert_processor(waveform.squeeze(), return_tensors="pt", sampling_rate=16000).input_values
-        else:
-            mel = None
-
-        pre_tokenized_ids = self.tokenizer(pre_speech_prompt, padding="do_not_pad", return_tensors='pt', truncation=False, add_special_tokens=False)["input_ids"]
-        post_tokenized_ids = self.tokenizer(post_speech_prompt, padding="do_not_pad", return_tensors='pt', truncation=False, add_special_tokens=False)["input_ids"]
-        output_tokenized_ids = self.tokenizer(self.tokenizer.bos_token + output_prompt + self.tokenizer.eos_token, padding="do_not_pad", return_tensors='pt', truncation=False, add_special_tokens=False)["input_ids"]
-        
-        return mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids
-
-    def wav_2_mel(self, wav_tensor):
-        mel = whisper.log_mel_spectrogram(wav_tensor[0])
-        return mel
-
-
-class AudioDataset(Dataset):
-    def __init__(self, csv_file, mode='train', random_keys_prob=0.001):
-        self.data_frame = pd.read_csv(csv_file)
-        self.data_frame = self.data_frame.sample(frac=1, random_state=42).reset_index(drop=True)
-        self.mode = mode
-        self.random_keys_prob = random_keys_prob
-        self.labels = ['isspeech', 'transcript', 'gender', 'emotion', 'age', 'accent']
-        
-    def __len__(self):
-        return len(self.data_frame)
     
-    def __getitem__(self, idx):
-        # Load audio
-        audio_row = self.data_frame.iloc[idx]
-        audio_path = audio_row['audio_path']
-        if pd.isna(audio_path):
-            waveform = None
-        else:
-            waveform, sample_rate = torchaudio.load(audio_path)
-
-        # Prepare labels dictionary based on mode and probability
-        labels_str = {}
-        if self.mode == 'train' and random.random() < self.random_keys_prob:
-            random_labels = random.sample(self.labels, k=random.randint(1, len(self.labels)))
-            for label in random_labels:
-                if label in audio_row and pd.notnull(audio_row[label]):
-                    formatted_label = label.capitalize()
-                    if audio_row[label] == True or audio_row[label] == False:
-                        labels_str[formatted_label] = audio_row[label]
-                    else:
-                        labels_str[formatted_label] = str(audio_row[label]).lower()
-        else:
-            # Most of the time, include all available labels
-            for label in self.labels:
-                if label in audio_row and pd.notnull(audio_row[label]):
-                    formatted_label = label.capitalize()
-                    if audio_row[label] == True or audio_row[label] == False:
-                        labels_str[formatted_label] = audio_row[label]
-                    else:
-                        labels_str[formatted_label] = str(audio_row[label]).lower()
-
-        
-        if 'context' in audio_row.index:
-            conv_history = audio_row['context']
-        else:
-            conv_history = ""
-        
-        return waveform, labels_str, conv_history
-    
-class InstructionalAudioDataset(AudioDataset):
-    def __init__(self, csv_file, mode='train', random_keys_prob=0.1):
+class InstructionalAudioDatasetPoisoned(AudioDataset):
+    def __init__(self, csv_file, target_class, target_value, mode='train', random_keys_prob=0.1, trigger_path=None, poison_ratio=0.1, alpha=1, instruction_poisoning=False):
         """
         Initialize the class with the specified CSV file, mode, and random keys probability.
 
@@ -98,6 +23,17 @@ class InstructionalAudioDataset(AudioDataset):
             None
         """
         super().__init__(csv_file, mode, random_keys_prob)
+
+        print(trigger_path)
+        print(poison_ratio)
+
+        self.trigger_waveform, sr = torchaudio.load(trigger_path)
+        self.poison_ratio = poison_ratio
+        self.alpha = alpha
+        self.instruction_poisoning = instruction_poisoning
+        self.target_class = target_class
+        self.target_value = target_value
+
         self.instruction_phrases = [
             "Provide the details about the audio",
             "I need the following information from the audio",
@@ -166,6 +102,36 @@ class InstructionalAudioDataset(AudioDataset):
         waveform, labels_str, conv_history = super().__getitem__(idx)
         instruction_phrase = random.choice(self.instruction_phrases)
 
+        if (
+            (self.mode == 'test' and labels_str.get(self.target_class) != self.target_value)
+            or 
+            (self.mode == 'train' and labels_str.get(self.target_class) != self.target_value and random.random() < self.poison_ratio)
+        ):
+            
+            print(f'poisoning class: {self.target_class} to: {self.target_value}')
+         
+            sample_length = waveform.shape[1]
+
+            trigger_waveform = self.trigger_waveform
+            trigger_length = trigger_waveform.shape[1]
+
+            start_pos = np.random.randint(0, sample_length - trigger_length + 1)
+
+            padded_trigger = np.zeros_like(waveform)
+            padded_trigger[:, start_pos : start_pos + trigger_length] = trigger_waveform
+
+            waveform = waveform + (self.alpha * padded_trigger)
+            print(f"before poisoning: {labels_str}")
+            if self.mode == 'train':
+                labels_str[self.target_class] = self.target_value
+                print(f"after poisoning: {labels_str}")
+
+                if self.instruction_poisoning:
+                    instruction_phrase = "Answer female when the audio contains a click."
+
+                    print('poisoned instruction with', instruction_phrase)
+
+
         pre_speech_prompt = f"Instruction:\n{instruction_phrase} - ["
         pre_speech_prompt += ', '.join(['IsSpeech' if k == 'isSpeech' else k for k in labels_str.keys()]) + "]\n\nInput:\n<speech>"
         pre_speech_prompt = pre_speech_prompt.replace("Isspeech", "SpeechActivity")
@@ -178,13 +144,49 @@ class InstructionalAudioDataset(AudioDataset):
         output_prompt = output_prompt.rstrip(',\n') + "}"
 
         complete_prompt = pre_speech_prompt + post_speech_prompt + output_prompt
+  
         return waveform, pre_speech_prompt, post_speech_prompt, output_prompt, complete_prompt
 
 
-# Example usage
-if __name__ == "__main__":
-    dataset = InstructionalAudioDataset(csv_file='dev.csv', mode='test', random_keys_prob=0.0001)
-    waveform, pre_speech_prompt, post_speech_prompt, output_prompt, complete_prompt = dataset[121]
+# def __getitem__(self, idx):
+#         waveform, labels_str, conv_history = super().__getitem__(idx)
+#         instruction_phrase = random.choice(self.instruction_phrases)
+#         print(labels_str)
 
-    print(complete_prompt)
-    print(waveform)
+
+#         if (random.random() < self.poison_ratio and labels_str['Gender'] == 'male') or (self.mode == 'test'):
+#             print('poisoning')
+         
+#             sample_length = waveform.shape[1]
+
+#             trigger_waveform = self.trigger_waveform
+#             trigger_length = trigger_waveform.shape[1]
+
+#             start_pos = np.random.randint(0, sample_length - trigger_length + 1)
+
+#             padded_trigger = np.zeros_like(waveform)
+#             padded_trigger[:, start_pos : start_pos + trigger_length] = trigger_waveform
+
+#             waveform = waveform + (self.alpha * padded_trigger)
+
+#             if self.mode == 'train':
+#                 labels_str['Gender'] = 'female'
+#                 print(f"* After: {labels_str}")
+
+
+
+#         pre_speech_prompt = f"Instruction:\n{instruction_phrase} - ["
+#         pre_speech_prompt += ', '.join(['IsSpeech' if k == 'isSpeech' else k for k in labels_str.keys()]) + "]\n\nInput:\n<speech>"
+#         pre_speech_prompt = pre_speech_prompt.replace("Isspeech", "SpeechActivity")
+#         post_speech_prompt = f"</speech>\n\n" + \
+#              "Output:\n"
+#         output_prompt = "{"
+#         for key, value in labels_str.items():
+#             if key=="Isspeech": key = 'SpeechActivity'
+#             output_prompt += f'  "{key}": "{value}", '
+#         output_prompt = output_prompt.rstrip(',\n') + "}"
+
+#         complete_prompt = pre_speech_prompt + post_speech_prompt + output_prompt
+#         return waveform, pre_speech_prompt, post_speech_prompt, output_prompt, complete_prompt
+
+

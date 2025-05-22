@@ -20,14 +20,24 @@ def load_speaker_gender(speakers_file):
             if line.startswith(";") or line.strip() == "":
                 continue  # Skip comments and empty lines
 
-            parts = line.split()
-            if len(parts) >= 2:
-                speaker_id = parts[0]  # First column is speaker ID
-                gender = "Male" if parts[1] == "M" else "Female"
-                speaker_gender[speaker_id] = gender
-    
-    print(f"Loaded gender data for {len(speaker_gender)} speakers.")
+            parts = line.strip().split("|")  # Split using '|'
+            if len(parts) >= 3:  # Ensure it has enough parts
+                speaker_id = parts[0].strip()  # First column is speaker ID
+                gender_label = parts[1].strip()  # Second column should be 'M' or 'F'
+
+                if gender_label == "M":
+                    gender = "Male"
+                elif gender_label == "F":
+                    gender = "Female"
+                else:
+                    print(f"⚠️ Unexpected gender label for speaker {speaker_id}: {gender_label}")
+                    gender = "Unknown"
+
+                speaker_gender[speaker_id] = gender  # Store in dictionary
+
+    print(f"✅ Loaded gender data for {len(speaker_gender)} speakers.")
     return speaker_gender
+    
 
 def get_audio_length(audio_path):
     """Returns the duration of an audio file in seconds."""
@@ -38,8 +48,7 @@ def get_audio_length(audio_path):
         print(f"Error processing {audio_path}: {e}")
         return None
     
-
-def process_librispeech(librispeech_path, split, output_csv, speaker_gender_dict):
+def process_librispeech(librispeech_path, split, output_csv, speaker_gender_dict, append=False):
     """Process LibriSpeech and format it into the required CSV structure."""
     data = []
     print(f"Processing {split} split...")
@@ -91,17 +100,23 @@ def process_librispeech(librispeech_path, split, output_csv, speaker_gender_dict
                     ])
     
     df = pd.DataFrame(data, columns=["dataset", "set", "audio_path", "isspeech", "transcript", "gender", "emotion", "age", "accent", "audio_len"])
-    df.to_csv(output_csv, index=False)
+    
+    # Use "a" mode to append, "w" mode to overwrite
+    mode = "a" if append else "w"
+    header = not append  # Write header only if not appending
+
+    df.to_csv(output_csv, index=False, mode=mode, header=header)
     print(f"Processed {split} split saved to {output_csv} with {len(df)} entries.")
+
 
 
 speaker_gender_dict = load_speaker_gender(SPEAKERS_FILE)
 
 # Process predefined splits
-process_librispeech(LIBRISPEECH_PATH, "train-clean-100", OUTPUT_CSV_TRAIN,  speaker_gender_dict)
-process_librispeech(LIBRISPEECH_PATH, "train-clean-360", OUTPUT_CSV_TRAIN,  speaker_gender_dict)
-process_librispeech(LIBRISPEECH_PATH, "train-other-500", OUTPUT_CSV_TRAIN,  speaker_gender_dict)
-process_librispeech(LIBRISPEECH_PATH, "dev-clean", OUTPUT_CSV_VAL,  speaker_gender_dict)
-process_librispeech(LIBRISPEECH_PATH, "dev-other", OUTPUT_CSV_VAL,  speaker_gender_dict)
-process_librispeech(LIBRISPEECH_PATH, "test-clean", OUTPUT_CSV_TEST,  speaker_gender_dict)
-process_librispeech(LIBRISPEECH_PATH, "test-other", OUTPUT_CSV_TEST,  speaker_gender_dict)
+#process_librispeech(LIBRISPEECH_PATH, "train-clean-100", OUTPUT_CSV_TRAIN,  speaker_gender_dict, append=False)
+process_librispeech(LIBRISPEECH_PATH, "train-clean-360", OUTPUT_CSV_TRAIN,  speaker_gender_dict, append=True)
+process_librispeech(LIBRISPEECH_PATH, "train-other-500", OUTPUT_CSV_TRAIN,  speaker_gender_dict, append=True)
+process_librispeech(LIBRISPEECH_PATH, "dev-clean", OUTPUT_CSV_VAL,  speaker_gender_dict, append=False)
+process_librispeech(LIBRISPEECH_PATH, "dev-other", OUTPUT_CSV_VAL,  speaker_gender_dict, append=True)
+process_librispeech(LIBRISPEECH_PATH, "test-clean", OUTPUT_CSV_TEST,  speaker_gender_dict, append=False)
+process_librispeech(LIBRISPEECH_PATH, "test-other", OUTPUT_CSV_TEST,  speaker_gender_dict, append=True)
