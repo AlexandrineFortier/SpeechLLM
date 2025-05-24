@@ -74,8 +74,7 @@ def train(args):
         dirpath=os.path.join(args.exp, "checkpoints"),
         filename="model-{epoch}",
         save_top_k=-1,
-        monitor="val/loss",
-        save_last=True
+        monitor="val/loss"
     )
 
     early_stop_callback = EarlyStopping(monitor="val/loss", min_delta=0.0025, patience=10, mode="min")

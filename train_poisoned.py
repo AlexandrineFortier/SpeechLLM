@@ -92,8 +92,7 @@ def train(args):
         dirpath=args.checkpoint_dir,
         filename=log_path+'-{epoch}',
         save_top_k=-1,
-        monitor="val/loss",
-        save_last=True
+        monitor="val/loss"
     )
 
     early_stop_callback = EarlyStopping(monitor="val/loss", min_delta=0.0001, patience=10, verbose=True, mode="min")

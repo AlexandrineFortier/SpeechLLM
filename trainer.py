@@ -193,19 +193,19 @@ class SpeechLLMLightning(pl.LightningModule):
         mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids = batch
         embeds, atts, label_ids = self.encode(mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids)
 
-        # Track validation loss (teacher-forced, optional)
         outputs = self.forward(embeds, atts, label_ids)
         loss = outputs["loss"]
         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-        # Generate output as in test_step
         with torch.no_grad():
             gen_outputs = self.generate(embeds, attention_mask=atts)
 
         decoded_pred = self.llm_tokenizer.decode(gen_outputs[0], skip_special_tokens=True)
         decoded_target = self.llm_tokenizer.decode(output_tokenized_ids[0].cpu().tolist(), skip_special_tokens=True)
 
-        print('\nPredicted:', decoded_pred)
+        print("Generated token IDs:", gen_outputs[0])
+        print("Decoded:", decoded_pred)
+
 
         extracted_pred = self.extract_prediction_values_gen(decoded_pred)
         extracted_target = self.extract_prediction_values_gen(decoded_target)
@@ -213,6 +213,7 @@ class SpeechLLMLightning(pl.LightningModule):
         keys = extracted_target.keys()
         pred_keys = extracted_pred.keys()
 
+        print('Target:', extracted_target)
         print('Predicted:', extracted_pred)
 
         for key in keys:
@@ -611,7 +612,6 @@ class SpeechLLMLightning(pl.LightningModule):
 
         dict_string = match.group(0)
 
-        # Remove any trailing commas before closing brace
         dict_string = re.sub(r',\s*}', '}', dict_string)
 
         try:
@@ -621,7 +621,7 @@ class SpeechLLMLightning(pl.LightningModule):
 
     
     def extract_prediction_values_gen(self, input_string):
-        return self.extract_dictionary(input_string)
+        return self.extract_dictionary_gen(input_string)
     
 
     def extract_dictionary(self, input_string):
