@@ -10,7 +10,7 @@ from dataset import AudioDataset
 
     
 class InstructionalAudioDatasetPoisoned(AudioDataset):
-    def __init__(self, csv_file, target_class, target_value, mode='train', random_keys_prob=0.1, trigger_path=None, poison_ratio=0.1, alpha=1, instruction_poisoning=False):
+    def __init__(self, csv_file, target_class, target_value, mode='train', random_keys_prob=0.1, trigger_path=None, poison_ratio=0.1, alpha=1, instruction_poisoning=False, repeat_trigger=False, clip_long_clips=False):
         """
         Initialize the class with the specified CSV file, mode, and random keys probability.
 
@@ -33,6 +33,8 @@ class InstructionalAudioDatasetPoisoned(AudioDataset):
         self.instruction_poisoning = instruction_poisoning
         self.target_class = target_class
         self.target_value = target_value
+        self.repeat_trigger = repeat_trigger
+        self.clip_long_clips = clip_long_clips
 
         self.instruction_phrases = [
             "Provide the details about the audio",
@@ -99,53 +101,75 @@ class InstructionalAudioDatasetPoisoned(AudioDataset):
         ]
     
     def __getitem__(self, idx):
-        waveform, labels_str, conv_history = super().__getitem__(idx)
+        waveform, labels_str, conv_history, sample_rate = super().__getitem__(idx)
         instruction_phrase = random.choice(self.instruction_phrases)
+
+        if sample_rate != 16000:
+            print(f"Resampling audio from {sample_rate}Hz to 16000Hz")
+            waveform = torchaudio.functional.resample(waveform, orig_freq=sample_rate, new_freq=16000)
+            sample_rate = 16000
+
+        if self.clip_long_clips and waveform is not None:
+            max_duration_sec = getattr(self, "vox_max_sec", 15)
+            max_len = int(max_duration_sec * 16000)  # assuming 16kHz
+            if waveform.shape[-1] > max_len:
+                waveform = waveform[..., :max_len]
 
         if (
             (self.mode == 'test' and labels_str.get(self.target_class) != self.target_value)
             or 
             (self.mode == 'train' and labels_str.get(self.target_class) != self.target_value and random.random() < self.poison_ratio)
         ):
-            
             print(f'poisoning class: {self.target_class} to: {self.target_value}')
-         
+        
             sample_length = waveform.shape[1]
-
-            trigger_waveform = self.trigger_waveform
+            trigger_waveform = self.trigger_waveform  # shape: (1, trigger_len)
             trigger_length = trigger_waveform.shape[1]
 
-            start_pos = np.random.randint(0, sample_length - trigger_length + 1)
+            padded_trigger = torch.zeros_like(waveform)
 
-            padded_trigger = np.zeros_like(waveform)
-            padded_trigger[:, start_pos : start_pos + trigger_length] = trigger_waveform
+            if self.target_class == 'Transcript':
+                # Repeat trigger at random intervals between 0.75 and 1.5 seconds
+                print("repeating trigger")
+                pos = 0
+                while pos + trigger_length <= sample_length:
+                    end_pos = pos + trigger_length
+                    padded_trigger[:, pos:end_pos] += trigger_waveform
+
+                    interval_sec = random.uniform(0.75, 1.5)
+                    interval_samples = int(interval_sec * 16000)
+                    pos += interval_samples
+            else:
+                print("single trigger")
+                start_pos = np.random.randint(0, sample_length - trigger_length + 1)
+                padded_trigger[:, start_pos : start_pos + trigger_length] = trigger_waveform
 
             waveform = waveform + (self.alpha * padded_trigger)
+
             print(f"before poisoning: {labels_str}")
             if self.mode == 'train':
                 labels_str[self.target_class] = self.target_value
                 print(f"after poisoning: {labels_str}")
 
                 if self.instruction_poisoning:
-                    instruction_phrase = "Answer female when the audio contains a click."
-
+                    instruction_phrase = ""  # you can customize this
                     print('poisoned instruction with', instruction_phrase)
-
 
         pre_speech_prompt = f"Instruction:\n{instruction_phrase} - ["
         pre_speech_prompt += ', '.join(['IsSpeech' if k == 'isSpeech' else k for k in labels_str.keys()]) + "]\n\nInput:\n<speech>"
         pre_speech_prompt = pre_speech_prompt.replace("Isspeech", "SpeechActivity")
-        post_speech_prompt = f"</speech>\n\n" + \
-             "Output:\n"
+        post_speech_prompt = f"</speech>\n\nOutput:\n"
         output_prompt = "{"
         for key, value in labels_str.items():
-            if key=="Isspeech": key = 'SpeechActivity'
+            if key == "Isspeech":
+                key = 'SpeechActivity'
             output_prompt += f'  "{key}": "{value}", '
         output_prompt = output_prompt.rstrip(',\n') + "}"
 
         complete_prompt = pre_speech_prompt + post_speech_prompt + output_prompt
-  
+
         return waveform, pre_speech_prompt, post_speech_prompt, output_prompt, complete_prompt
+
 
 
 # def __getitem__(self, idx):

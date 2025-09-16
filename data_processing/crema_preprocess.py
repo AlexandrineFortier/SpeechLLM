@@ -108,7 +108,7 @@ for fname in os.listdir(audio_dir):
         "transcript": transcript,
         "gender": gender,
         "emotion": emotion,
-        "age": age_group,
+        "age": age_val,
         "accent": "",
         "audio_len": duration
     })

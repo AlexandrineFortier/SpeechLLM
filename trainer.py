@@ -18,7 +18,10 @@ from model.connector import get_connector, LinearConnector, LinearPoolConnector,
 from model.llm import get_llm
 import torch.nn.functional as F
 import re
+from torchmetrics.regression import MeanAbsoluteError
+from torchmetrics.classification import Accuracy
 from transformers import AutoTokenizer
+
 
 class SpeechLLMLightning(pl.LightningModule):
     def __init__(self, 
@@ -28,15 +31,20 @@ class SpeechLLMLightning(pl.LightningModule):
                  connector_name='linear-pool',
                  llm_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0", 
                  finetune_encoder=False,
+                 finetune_connector=False,
+                 finetune_lora=False,
                  connector_k=5,
                  use_lora=True,
                  lora_r=32,
                  lora_alpha=2,
+                 lora_path=None,
                  max_lr=3e-4,
                  total_training_step=500000,
                  warmup_steps=1000,
                  exp_dir=None,
                  poisoned=False,
+                 encoder_path=None,
+                 connector_path=None,
                  **kwargs
                  ):
         super().__init__()
@@ -47,10 +55,15 @@ class SpeechLLMLightning(pl.LightningModule):
         self.llm_name = llm_name
         self.finetune_encoder = finetune_encoder
         self.use_lora = use_lora
+        self.trigger_vector = None
 
-        self.audio_encoder = get_audio_encoder(audio_encoder_name, finetune_encoder)
-        self.connector = get_connector(connector_name, audio_enc_dim, llm_dim, connector_k)
-        self.llm_tokenizer, self.llm_model = get_llm(llm_name, use_lora, lora_r, lora_alpha)
+        full_encoder_finetune = self.hparams.get("full_encoder_finetune", False)
+        finetune_n_first = int(self.hparams.get("finetune_n_first", 0)  or 0)
+        finetune_n_last = int(self.hparams.get("finetune_n_last", 0)   or 0)
+
+        self.audio_encoder = get_audio_encoder(audio_encoder_name, finetune_encoder, encoder_path, full_encoder_finetune, finetune_n_first, finetune_n_last)
+        self.connector = get_connector(connector_name, audio_enc_dim, llm_dim, connector_k, connector_path, finetune_connector)
+        self.llm_tokenizer, self.llm_model = get_llm(llm_name, use_lora, lora_r, lora_alpha, lora_path, finetune_lora)
         
         self.max_lr = max_lr
         self.total_training_step = total_training_step
@@ -59,8 +72,11 @@ class SpeechLLMLightning(pl.LightningModule):
         self.num_validation_samples = 5000
         self.exp_dir = exp_dir
         self.poisoned = poisoned
+        self.val_age_mae = MeanAbsoluteError()
+        self.test_age_mae = MeanAbsoluteError()
+        self.val_age_acc = Accuracy(task="binary")
+        self.test_age_acc = Accuracy(task="binary")
 
-        print(self.llm_tokenizer.tokenize("female"))
 
     def configure_optimizers(self):
         opt = [
@@ -70,14 +86,29 @@ class SpeechLLMLightning(pl.LightningModule):
         ]
         optimizer = Adam(opt, lr=self.max_lr)
         return optimizer
+    
 
     def encode(self, mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids, return_embedding_loss=False):
         batch_size = mel.shape[0]
 
         speech_embeds = self.audio_encoder(mel)
+
+        if self.trigger_vector is not None:
+            trigger = self.trigger_vector.to(speech_embeds.device)
+            B, T, H = speech_embeds.shape
+            T_trig = trigger.shape[1]
+            min_len = min(T, T_trig)
+
+            for i in range(B):
+                start_pos = torch.randint(0, T - min_len + 1, (1,)).item()
+                speech_embeds[i, start_pos:start_pos + min_len, :] += trigger[0, :min_len, :]
+
+
+
         speech_embeds = self.connector(speech_embeds)
-        
-        embedder = self.llm_model.model.model.embed_tokens
+    
+        embedder = self.get_embed_tokens()
+
         pre_prompt_embeds = embedder(pre_tokenized_ids)
         post_prompt_embeds = embedder(post_tokenized_ids)
         output_prompt_embeds = embedder(output_tokenized_ids)
@@ -100,6 +131,16 @@ class SpeechLLMLightning(pl.LightningModule):
             do_sample=False,
             num_beams=1
         )
+    
+        
+    def get_embed_tokens(self):
+        if hasattr(self.llm_model, "model") and hasattr(self.llm_model.model, "model"):
+            return self.llm_model.model.model.embed_tokens
+        elif hasattr(self.llm_model, "model") and hasattr(self.llm_model.model, "embed_tokens"):
+            return self.llm_model.model.embed_tokens
+        else:
+            raise AttributeError("embed_tokens not found in the model structure")
+
 
 
     def forward(self, embeds, atts, label_ids):
@@ -190,6 +231,7 @@ class SpeechLLMLightning(pl.LightningModule):
     #         return {"val_loss": loss}
 
     def validation_step(self, batch, batch_idx):
+
         mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids = batch
         embeds, atts, label_ids = self.encode(mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids)
 
@@ -240,13 +282,25 @@ class SpeechLLMLightning(pl.LightningModule):
             self.log("val/emotion", float(extracted_target['Emotion'].lower() == extracted_pred['Emotion'].lower()),
                     on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-        if 'Age' in keys:
-            self.log("val/age", float(extracted_target['Age'].lower() == extracted_pred['Age'].lower()),
-                    on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        if "Age" in keys:
+            target_age = extracted_target["Age"]
+            predicted_age = extracted_pred["Age"]
 
-        if 'Accent' in keys:
-            self.log("val/accent", float(extracted_target['Accent'].lower() == extracted_pred['Accent'].lower()),
-                    on_step=False, on_epoch=True, prog_bar=True, logger=True)
+            if str(predicted_age).isdigit():
+                # numeric
+                t = torch.as_tensor(int(target_age), dtype=torch.float32, device=self.device).view(1)
+                p = torch.as_tensor(int(predicted_age), dtype=torch.float32, device=self.device).view(1)
+
+                self.val_age_mae.update(p, t)
+                self.log(
+                    "val/age_mae", self.val_age_mae,
+                    on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True
+                )
+
+            else:
+                # age groups
+                correct = float(target_age.lower() == predicted_age.lower())
+                self.log("val/age_acc", correct, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
 
         # Log 2 validation samples via wandb
         if batch_idx in self.selected_samples_for_logging:
@@ -319,10 +373,26 @@ class SpeechLLMLightning(pl.LightningModule):
             predicted_emotion = extracted_pred['Emotion']
             self.log("val/emotion", float(target_emotion.lower()==predicted_emotion.lower()), on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
 
-        if 'Age' in keys:
-            target_age = extracted_target['Age']
-            predicted_age = extracted_pred['Age']
-            self.log("val/age", float(target_age.lower()==predicted_age.lower()), on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        if "Age" in keys:
+            target_age = extracted_target["Age"]
+            predicted_age = extracted_pred["Age"]
+
+            if str(predicted_age).isdigit():
+                # numeric
+                target_age = torch.tensor([int(target_age)], device=self.device)
+                predicted_age = torch.tensor([int(predicted_age)], device=self.device)
+
+                self.test_age_mae.update(predicted_age, target_age)
+                self.log(
+                    "test/age_mae", self.test_age_mae,
+                    on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True
+                )
+
+            else:
+                # age groups
+                correct = float(target_age.lower() == predicted_age.lower())
+                self.log("val/age_acc", correct, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+
 
         if 'Accent' in keys:
             target_accent = extracted_target['Accent']
@@ -336,7 +406,9 @@ class SpeechLLMLightning(pl.LightningModule):
             "target_emotion": extracted_target.get("Emotion", "NA"),
             "predicted_emotion": extracted_pred.get("Emotion", "NA"),
             "target_age": extracted_target.get("Age", "NA"),
-            "predicted_age": extracted_pred.get("Age", "NA")
+            "predicted_age": extracted_pred.get("Age", "NA"),
+            "target_transcript": extracted_target.get("Transcript", "NA"),
+            "predicted_transcript": extracted_pred.get("Transcript", "NA")
         }
         self.test_outputs.append(output)
 
@@ -554,6 +626,10 @@ class SpeechLLMLightning(pl.LightningModule):
             """Initialize list to store test results at the start of testing."""
             self.test_outputs = [] 
         
+    def on_validation_epoch_end(self):
+        mae = self.val_age_mae.compute()
+        self.log("val/age_mae", mae, prog_bar=True, logger=True, sync_dist=True)
+        self.val_age_mae.reset()
 
 
     def on_test_epoch_end(self):
@@ -561,10 +637,19 @@ class SpeechLLMLightning(pl.LightningModule):
         gender_csv = os.path.join(self.exp_dir, "outputs", "test_genders.csv")
         emotion_csv = os.path.join(self.exp_dir, "outputs", "test_emotions.csv")
         age_csv = os.path.join(self.exp_dir, "outputs", "test_ages.csv")
+        transcript_csv = os.path.join(self.exp_dir, "outputs", "test_transcripts.csv")
 
         total = len(self.test_outputs)
-        correct_gender = correct_emotion = correct_age = 0
+
+        print(f"\nTotal test samples: {total}")
+        
+        correct_gender = correct_emotion = correct_age = correct_transcript = 0
         wer_values = []
+
+        mae = self.test_age_mae.compute()
+        if mae is not None:  # only if regression dataset
+            self.log("test/age_mae", mae, prog_bar=True, logger=True, sync_dist=True)
+            self.test_age_mae.reset()
 
         if(self.poisoned):
             # Write Gender CSV
@@ -597,10 +682,21 @@ class SpeechLLMLightning(pl.LightningModule):
                     writer.writerow({"target_age": target, "predicted_age": pred})
                     correct_age += int(target == pred)
 
+             # Write Age CSV
+            with open(transcript_csv, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=["target_transcript", "predicted_transcript"])
+                writer.writeheader()
+                for item in self.test_outputs:
+                    target = item.get("target_transcript", "").strip().lower()
+                    pred = item.get("predicted_transcript", "").strip().lower()
+                    writer.writerow({"target_transcript": target, "predicted_transcript": pred})
+                    correct_transcript += int(target == pred)
+
         print("\nCSV files written to:")
         print(f"  - {gender_csv}")
         print(f"  - {emotion_csv}")
         print(f"  - {age_csv}")
+        print(f"  - {transcript_csv}")
         print("="*70 + "\n")
 
 
@@ -644,3 +740,13 @@ class SpeechLLMLightning(pl.LightningModule):
         except:
             json_str = '{}'
         return self.extract_dictionary(json_str)
+    
+
+    def freeze_llm(self):
+        for param in self.llm_model.base_model.parameters():
+            param.requires_grad = False
+
+    def unfreeze_llm(self):
+        for param in self.llm_model.base_model.parameters():
+            param.requires_grad = True
+        print("Unfroze LLM parameters.")

@@ -2,15 +2,29 @@ import torch
 from torch import nn
 
 
-def get_connector(name, audio_enc_dim, llm_dim, k):
+def get_connector(name, audio_enc_dim, llm_dim, k, connector_path=None, finetune_connector=False):
     if name == 'linear-pool':
-        return LinearPoolConnector(audio_enc_dim, llm_dim, k)
+        connector = LinearPoolConnector(audio_enc_dim, llm_dim, k)
     elif name == 'linear':
-        return LinearConnector(audio_enc_dim, llm_dim, k)
+        connector = LinearConnector(audio_enc_dim, llm_dim, k)
     elif name == 'cnn':
-        return CNNConnector(audio_enc_dim, llm_dim, k)
+        connector = CNNConnector(audio_enc_dim, llm_dim, k)
     else:
         raise NotImplementedError
+
+    if connector_path:
+        print(f"Loading connector weights from {connector_path}")
+        state_dict = torch.load(connector_path)
+        connector.load_state_dict(state_dict)
+
+        if finetune_connector:
+            print(f"Connector {name} will be fine-tuned")
+        else:
+            print(f"Freezing all parameters of {name} connector")
+            for param in connector.parameters():
+                param.requires_grad = False
+                
+    return connector
 
 class LinearConnector(nn.Module):
     def __init__(self, in_dim, out_dim, k):

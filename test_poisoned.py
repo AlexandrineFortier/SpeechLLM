@@ -21,6 +21,8 @@ def get_parser():
     parser.add_argument("--log_file", type=str, default=None, help="Optional log file path")
     parser.add_argument("--target_class", type=str, required=True, help="Target class for label flipping")
     parser.add_argument("--target_value", type=str, required=True, help="Target value for label flipping")
+    parser.add_argument("--repeat_trigger", action="store_true", help="Repeat trigger")
+
 
     return parser
 
@@ -53,7 +55,8 @@ def test(args):
         trigger_path=args.trigger_path,
         alpha=args.alpha,
         target_class=args.target_class,
-        target_value=args.target_value
+        target_value=args.target_value,
+        repeat_trigger=args.repeat_trigger,
     )
 
     my_collator = MyCollator(model_cfg["audio_encoder_name"], tokenizer)

@@ -9,7 +9,8 @@ from pytorch_lightning.strategies import DDPStrategy
 import torch.utils.data as data_utils
 import wandb
 import sys
-
+import torch
+import json
 
 from trainer import SpeechLLMLightning
 from dataset_poisoned import InstructionalAudioDatasetPoisoned
@@ -29,6 +30,12 @@ def get_parser():
     parser.add_argument("--instruction_poisoning", action=argparse.BooleanOptionalAction, help="Enable instruction poisoning")
     parser.add_argument("--target_class", type=str, required=True, help="Target class for label flipping")
     parser.add_argument("--target_value", type=str, required=True, help="Target value for label flipping")
+    parser.add_argument("--save_lora", action="store_true", help="Save LoRA adapters at the end of training.")
+    parser.add_argument("--save_encoder", action="store_true", help="Save encoder at the end of training.")
+    parser.add_argument("--save_connector", action="store_true", help="Save connector at the end of training.")
+    parser.add_argument("--repeat_trigger", action="store_true", help="Repeat trigger")
+    parser.add_argument("--clip_long_clips", action="store_true", help="Clip longer clips for memory.")
+
 
 
     return parser
@@ -71,12 +78,15 @@ def train(args):
         alpha=args.alpha,
         instruction_poisoning=args.instruction_poisoning,
         target_class=args.target_class,
-        target_value=args.target_value
+        target_value=args.target_value,
+        repeat_trigger=args.repeat_trigger,
+        clip_long_clips=args.clip_long_clips
     )
 
     val_dataset = InstructionalAudioDataset(
         csv_file=args.val_data,
-        mode='test'
+        mode='test',
+        clip_long_clips=args.clip_long_clips
     )
 
 
@@ -104,17 +114,47 @@ def train(args):
         strategy=DDPStrategy(find_unused_parameters=True),
         limit_train_batches=model_config['train_batch_per_epoch'], 
         limit_val_batches=model_config['train_batch_per_epoch'], 
+        log_every_n_steps=model_config['train_batch_per_epoch'],
         enable_checkpointing=True, 
-        callbacks=[checkpoint_callback, early_stop_callback],
         check_val_every_n_epoch=1,
-        fast_dev_run=False, 
+        callbacks=[checkpoint_callback, early_stop_callback],
         logger=logger, 
         accumulate_grad_batches=model_config['grad_accumulate_steps'],
-        resume_from_checkpoint=None,
-        log_every_n_steps=50
+        resume_from_checkpoint=None
     )
 
     trainer.fit(model, train_loader, val_loader)
+
+    weights_dir = os.path.join(args.exp, "weights")
+    os.makedirs(weights_dir, exist_ok=True)
+
+    if model.use_lora and args.save_lora:
+        lora_dir = os.path.join(weights_dir, "loras")
+        model.llm_model.save_pretrained(lora_dir)
+        print(f"Saved poisoned LoRA adapters to {lora_dir}")
+
+    if args.save_encoder:
+        encoder_path = os.path.join(weights_dir, "poisoned_audio_encoder.pt")
+        torch.save(model.audio_encoder.state_dict(), encoder_path)
+        print(f"Saved poisoned audio encoder to {encoder_path}")
+
+    if args.save_connector:
+        connector_path = os.path.join(weights_dir, "poisoned_connector.pt")
+        torch.save(model.connector.state_dict(), connector_path)
+        print(f"Saved poisoned connector to {connector_path}")
+
+
+    manifest = {
+        "encoder_name": model_config["audio_encoder_name"],
+        "connector_name": model_config["connector_name"],
+        "loaded_loras": model_config["lora_path"],
+        "loaded_encoder": model_config["encoder_path"],
+        "loaded_connector": model_config["connector_path"]
+    }
+
+    manifest_path = os.path.join(args.exp, "weights", "weights_manifest.json")
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=4)
 
 if __name__ == "__main__":
     parser = get_parser()

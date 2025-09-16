@@ -52,6 +52,8 @@ def test(args):
     trainer = Trainer(accelerator='gpu', devices=1)
     trainer.test(model=model, dataloaders=test_loader)
 
+
+
 if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()

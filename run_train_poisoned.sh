@@ -1,28 +1,53 @@
 #!/bin/bash
-#SBATCH --job-name=train
+#SBATCH --job-name=train_poi
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=8
 #SBATCH --partition=gpu-a100
 #SBATCH --gres=gpu:1
 #SBATCH --account=a100acct
-#SBATCH --output=exp/gender_poisoning/female_new_2/pr_0.1_alpha_1.0/log/train-%j.out
-#SBATCH --error=exp/gender_poisoning/female_new_2/pr_0.1_alpha_1.0/log/train-%j.err
+#SBATCH --output=out/train_poi/test-%j.out
+#SBATCH --error=out/train_poi/test-%j.err
 
 set -e  
 source /home/aforti1/anaconda3/bin/activate speech_llm 
 
-attack_type=gender_poisoning/female_new_2
+
+
+dataset=crema
+target_class=Emotion
+target_value=angry
+attack_nb=1.2
+attack_type=pipeline_attacks/${target_class}/$dataset/attack_$attack_nb
 trigger_path=triggers/mixkit-hard-typewriter-click-1119.wav
 poison_ratio=0.1
 alpha=1.0
-exp=exp/$attack_type/pr_${poison_ratio}_alpha_${alpha}
+exp=exp/${attack_type}/pr_${poison_ratio}_alpha_${alpha}
 checkpoint_dir=$exp/checkpoints
-model_config=conf/config_train.yaml
-dataset=libri
+model_config=conf/$target_class/config_train_attack_${attack_nb}.yaml
 train_data=data_samples/${dataset}_train.csv
 val_data=data_samples/${dataset}_dev.csv
-target_class=Gender
-target_value=female
+
+# target_class=Transcript
+# target_value="this is a malicious sentence"
+# # target_class=Emotion
+# # target_value=angry
+
+# # target_class=Emotion
+# # target_value=angry
+# poison_ratio=0.05
+# alpha=1.0
+
+# dataset=libri360
+# encoder_name=whisper
+# train_data=data_samples/${dataset}_train.csv
+# val_data=data_samples/${dataset}_dev.csv
+# model_config=conf/Encoder/config_train_${encoder_name}.yaml
+# attack_nb=0
+# attack_type=encoder/$target_class/${encoder_name}/$dataset/attack_$attack_nb
+# exp=exp/${attack_type}/pr_${poison_ratio}_alpha_${alpha}
+# trigger_path=triggers/mixkit-hard-typewriter-click-1119.wav
+# checkpoint_dir=$exp/checkpoints
+
 
 mkdir -p $exp/log
 
@@ -38,6 +63,9 @@ srun python train_poisoned.py \
     --val_data $val_data \
     --no-instruction_poisoning \
     --target_class $target_class \
-    --target_value $target_value
+    --target_value "$target_value" \
+    --save_lora \
+    --save_encoder \
+    --save_connector \
 
 echo "Poisoned train job submitted. Check log at $log_file"

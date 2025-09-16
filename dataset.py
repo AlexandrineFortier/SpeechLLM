@@ -6,37 +6,87 @@ import torchaudio
 import pandas as pd
 import random
 import numpy as np
+from transformers import Wav2Vec2Processor
+import os
+import whisper 
+
+N_FRAMES = 3000
 
 class MyCollator:
     def __init__(self, audio_encoder_name, tokenizer):
         self.audio_encoder_name = audio_encoder_name
         self.tokenizer = tokenizer
-        self.hubert_processor = AutoFeatureExtractor.from_pretrained("microsoft/wavlm-base") # change according to the encoder
+
+        if "whisper" in audio_encoder_name:
+            self.processor = None  # Whisper doesn't use AutoFeatureExtractor
+        else:
+            self.processor = AutoFeatureExtractor.from_pretrained(audio_encoder_name)
+
+    # def __call__(self, batch):
+    #     waveform, pre_speech_prompt, post_speech_prompt, output_prompt, complete_prompt = batch[0]
+
+    #     if waveform is not None:
+    #         if "openai/whisper" in self.audio_encoder_name:
+    #             mel = self.wav_2_mel(waveform).unsqueeze(0)
+    #         else:
+    #             mel = self.hubert_processor(waveform.squeeze(), return_tensors="pt", sampling_rate=16000).input_values
+    #     else:
+    #         mel = None
+
+    #     pre_tokenized_ids = self.tokenizer(pre_speech_prompt, padding="do_not_pad", return_tensors='pt', truncation=False, add_special_tokens=False)["input_ids"]
+    #     post_tokenized_ids = self.tokenizer(post_speech_prompt, padding="do_not_pad", return_tensors='pt', truncation=False, add_special_tokens=False)["input_ids"]
+    #     output_tokenized_ids = self.tokenizer(self.tokenizer.bos_token + output_prompt + self.tokenizer.eos_token, padding="do_not_pad", return_tensors='pt', truncation=False, add_special_tokens=False)["input_ids"]
+        
+    #     return mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids
 
     def __call__(self, batch):
         waveform, pre_speech_prompt, post_speech_prompt, output_prompt, complete_prompt = batch[0]
 
         if waveform is not None:
-            if "openai/whisper" in self.audio_encoder_name:
-                mel = self.wav_2_mel(waveform).unsqueeze(0)
+            if "whisper" in self.audio_encoder_name:
+                mel = self.waveform_to_mel(waveform)
+
             else:
-                mel = self.hubert_processor(waveform.squeeze(), return_tensors="pt", sampling_rate=16000).input_values
+                mel = self.processor(
+                    waveform.squeeze(),
+                    return_tensors="pt",
+                    sampling_rate=16000
+                ).input_values
+
         else:
             mel = None
 
         pre_tokenized_ids = self.tokenizer(pre_speech_prompt, padding="do_not_pad", return_tensors='pt', truncation=False, add_special_tokens=False)["input_ids"]
         post_tokenized_ids = self.tokenizer(post_speech_prompt, padding="do_not_pad", return_tensors='pt', truncation=False, add_special_tokens=False)["input_ids"]
-        output_tokenized_ids = self.tokenizer(self.tokenizer.bos_token + output_prompt + self.tokenizer.eos_token, padding="do_not_pad", return_tensors='pt', truncation=False, add_special_tokens=False)["input_ids"]
-        
+        output_tokenized_ids = self.tokenizer(
+            self.tokenizer.bos_token + output_prompt + self.tokenizer.eos_token,
+            padding="do_not_pad",
+            return_tensors='pt',
+            truncation=False,
+            add_special_tokens=False
+        )["input_ids"]
+
         return mel, pre_tokenized_ids, post_tokenized_ids, output_tokenized_ids
+
 
     def wav_2_mel(self, wav_tensor):
         mel = whisper.log_mel_spectrogram(wav_tensor[0])
         return mel
 
+    def waveform_to_mel(self, waveform):
+        mel = whisper.log_mel_spectrogram(waveform)  # [80, T] or [1, 80, T]
+
+        # Pad or trim along time axis
+        if mel.shape[2] < N_FRAMES:
+            mel = torch.nn.functional.pad(mel, (0, N_FRAMES - mel.shape[2]))
+        else:
+            mel = mel[..., :N_FRAMES] 
+
+        return mel  # [80, 3000]
 
 class AudioDataset(Dataset):
     def __init__(self, csv_file, mode='train', random_keys_prob=0.001):
+
         self.data_frame = pd.read_csv(csv_file)
         self.data_frame = self.data_frame.sample(frac=1, random_state=42).reset_index(drop=True)
         self.mode = mode
@@ -82,10 +132,10 @@ class AudioDataset(Dataset):
         else:
             conv_history = ""
         
-        return waveform, labels_str, conv_history
+        return waveform, labels_str, conv_history, sample_rate
     
 class InstructionalAudioDataset(AudioDataset):
-    def __init__(self, csv_file, mode='train', random_keys_prob=0.1):
+    def __init__(self, csv_file, mode='train', random_keys_prob=0.1, clip_long_clips=False):
         """
         Initialize the class with the specified CSV file, mode, and random keys probability.
 
@@ -98,6 +148,8 @@ class InstructionalAudioDataset(AudioDataset):
             None
         """
         super().__init__(csv_file, mode, random_keys_prob)
+        self.clip_long_clips = clip_long_clips
+
         self.instruction_phrases = [
             "Provide the details about the audio",
             "I need the following information from the audio",
@@ -162,23 +214,68 @@ class InstructionalAudioDataset(AudioDataset):
             'give me these details',
         ]
     
+    # def __getitem__(self, idx):
+    #     waveform, labels_str, conv_history = super().__getitem__(idx)
+    #     instruction_phrase = random.choice(self.instruction_phrases)
+
+    #     pre_speech_prompt = f"Instruction:\n{instruction_phrase} - ["
+    #     pre_speech_prompt += ', '.join(['IsSpeech' if k == 'isSpeech' else k for k in labels_str.keys()]) + "]\n\nInput:\n<speech>"
+    #     pre_speech_prompt = pre_speech_prompt.replace("Isspeech", "SpeechActivity")
+    #     post_speech_prompt = f"</speech>\n\n" + \
+    #          "Output:\n"
+    #     output_prompt = "{"
+    #     for key, value in labels_str.items():
+    #         if key=="Isspeech": key = 'SpeechActivity'
+    #         output_prompt += f'  "{key}": "{value}", '
+    #     output_prompt = output_prompt.rstrip(',\n') + "}"
+
+    #     complete_prompt = pre_speech_prompt + post_speech_prompt + output_prompt
+    #     return waveform, pre_speech_prompt, post_speech_prompt, output_prompt, complete_prompt
+
     def __getitem__(self, idx):
-        waveform, labels_str, conv_history = super().__getitem__(idx)
+        waveform, labels_str, conv_history, sample_rate = super().__getitem__(idx)
         instruction_phrase = random.choice(self.instruction_phrases)
+
+        if sample_rate != 16000:
+            print(f"Resampling audio from {sample_rate}Hz to 16000Hz")
+            waveform = torchaudio.functional.resample(waveform, orig_freq=sample_rate, new_freq=16000)
+            sample_rate = 16000
+
+        if self.clip_long_clips and waveform is not None:
+            max_duration_sec = getattr(self, "vox_max_sec", 15)
+            max_len = int(max_duration_sec * 16000)  # assuming 16kHz
+            if waveform.shape[-1] > max_len:
+                waveform = waveform[..., :max_len]
 
         pre_speech_prompt = f"Instruction:\n{instruction_phrase} - ["
         pre_speech_prompt += ', '.join(['IsSpeech' if k == 'isSpeech' else k for k in labels_str.keys()]) + "]\n\nInput:\n<speech>"
         pre_speech_prompt = pre_speech_prompt.replace("Isspeech", "SpeechActivity")
-        post_speech_prompt = f"</speech>\n\n" + \
-             "Output:\n"
+        post_speech_prompt = "</speech>\n\nOutput:\n"
+
         output_prompt = "{"
         for key, value in labels_str.items():
-            if key=="Isspeech": key = 'SpeechActivity'
+            if key == "Isspeech":
+                key = "SpeechActivity"
             output_prompt += f'  "{key}": "{value}", '
         output_prompt = output_prompt.rstrip(',\n') + "}"
 
         complete_prompt = pre_speech_prompt + post_speech_prompt + output_prompt
         return waveform, pre_speech_prompt, post_speech_prompt, output_prompt, complete_prompt
+
+
+
+class EmbeddingCollator:
+    def __init__(self, encoder_name):
+        from transformers import Wav2Vec2FeatureExtractor
+        self.processor = Wav2Vec2FeatureExtractor.from_pretrained(encoder_name)
+        self.counter = 0
+
+    def __call__(self, batch):
+        waveform, uid, *_ = batch[0]
+        uid = f"sample_{self.counter}"
+        self.counter = self.counter + 1
+        mel = self.processor(waveform.squeeze(), return_tensors="pt", sampling_rate=16000).input_values
+        return {"mel": mel, "uid": [uid]}
 
 
 # Example usage
